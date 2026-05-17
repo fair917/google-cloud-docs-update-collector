@@ -12,6 +12,10 @@ build/
 dist/
 *.duckdb
 *.duckdb.wal
+*.sqlite
+*.sqlite3
+*.db
+*.db-journal
 .terraform/
 .terraform.lock.hcl
 terraform.tfstate

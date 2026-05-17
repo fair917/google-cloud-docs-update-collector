@@ -4,7 +4,6 @@ version = "0.1.0"
 description = "Detect additions and updates of Google Cloud docs via sitemap.xml"
 requires-python = ">=3.12"
 dependencies = [
-    "duckdb>=1.1.0",
     "google-cloud-storage>=2.18.0",
     "httpx[http2]>=0.27.0",
     "beautifulsoup4>=4.12.0",

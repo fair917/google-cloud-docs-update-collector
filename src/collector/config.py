@@ -50,7 +50,7 @@ def load_config(path: str | Path | None = None) -> Config:
     return Config(
         sitemap_root=raw["sitemap_root"],
         bucket=bucket,
-        state_object=raw.get("state_object", "state/state.duckdb"),
+        state_object=raw.get("state_object", "state/state.sqlite"),
         snapshot_prefix=raw.get("snapshot_prefix", "snapshots"),
         diff_prefix=raw.get("diff_prefix", "diffs"),
         languages=tuple(raw.get("languages", ["en"])),

@@ -4,8 +4,15 @@ Watch `https://cloud.google.com/sitemap.xml`, detect added/updated docs pages
 under configured path prefixes for chosen languages, and store HTML snapshots
 + rendered-text diffs in GCS for later notification (Discord, etc.).
 
-State lives in a single DuckDB file on GCS; the Cloud Run Job downloads it at
-startup and writes it back at the end of each run.
+State lives in a single SQLite file on GCS; the Cloud Run Job downloads it at
+startup and writes it back at the end of each run. Inspect locally with the
+ubiquitous `sqlite3` CLI:
+
+```sh
+gcloud storage cp gs://<bucket>/state/state.sqlite /tmp/state.sqlite
+sqlite3 /tmp/state.sqlite \
+  "SELECT detected_at, change_type, url FROM revisions ORDER BY detected_at DESC LIMIT 20;"
+```
 
 ## Layout
 
@@ -14,7 +21,7 @@ src/collector/
   main.py        # entrypoint, orchestrates a single run
   config.py      # config + URL classification (language + watch_paths)
   sitemap.py     # sitemap index + child sitemap parsing
-  state.py       # DuckDB schema and access (downloaded from / uploaded to GCS)
+  state.py       # SQLite schema and access (downloaded from / uploaded to GCS)
   fetcher.py     # HTTP client with simple retry
   extractor.py   # strip header/footer/nav, keep main article HTML + text
   differ.py      # unified text diff + difflib.HtmlDiff HTML page
@@ -28,7 +35,7 @@ terraform/      # bucket, Artifact Registry, Cloud Run Job, two Schedulers
 
 ```
 gs://<bucket>/
-  state/state.duckdb
+  state/state.sqlite
   snapshots/<lang>/<sha256(url)[0:2]>/<sha256(url)>/<revision_id>.html
   diffs/<lang>/<sha256(url)[0:2]>/<sha256(url)>/<revision_id>.diff.txt
   diffs/<lang>/<sha256(url)[0:2]>/<sha256(url)>/<revision_id>.diff.html

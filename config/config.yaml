@@ -8,7 +8,7 @@ sitemap_root: "https://cloud.google.com/sitemap.xml"
 bucket: ""
 
 # Object keys inside the bucket.
-state_object: "state/state.duckdb"
+state_object: "state/state.sqlite"
 snapshot_prefix: "snapshots"
 diff_prefix: "diffs"
 

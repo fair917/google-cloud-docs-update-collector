@@ -1,45 +1,45 @@
 from __future__ import annotations
 
 import os
+import sqlite3
 import tempfile
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Iterable, Iterator
+from typing import TYPE_CHECKING, Iterable, Iterator
 
-import duckdb
-
-from .storage import GcsClient
+if TYPE_CHECKING:
+    from .storage import GcsClient
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS sitemaps (
     loc TEXT PRIMARY KEY,
-    lastmod TIMESTAMP,
-    last_processed_at TIMESTAMP,
+    lastmod TEXT,
+    last_processed_at TEXT,
     url_count INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS pages (
     url TEXT PRIMARY KEY,
     language TEXT NOT NULL,
-    sitemap_lastmod TIMESTAMP,
-    first_seen_at TIMESTAMP NOT NULL,
-    last_fetched_at TIMESTAMP,
+    sitemap_lastmod TEXT,
+    first_seen_at TEXT NOT NULL,
+    last_fetched_at TEXT,
     last_content_hash TEXT,
     last_html_gcs_path TEXT,
     last_revision_id TEXT,
     error_count INTEGER NOT NULL DEFAULT 0,
     last_error TEXT,
-    last_error_at TIMESTAMP
+    last_error_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS revisions (
     revision_id TEXT PRIMARY KEY,
     url TEXT NOT NULL,
     language TEXT NOT NULL,
-    detected_at TIMESTAMP NOT NULL,
-    sitemap_lastmod TIMESTAMP,
+    detected_at TEXT NOT NULL,
+    sitemap_lastmod TEXT,
     content_hash TEXT NOT NULL,
     title TEXT,
     html_gcs_path TEXT,
@@ -49,11 +49,12 @@ CREATE TABLE IF NOT EXISTS revisions (
     change_type TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS revisions_url_idx ON revisions(url);
+CREATE INDEX IF NOT EXISTS revisions_detected_idx ON revisions(detected_at);
 
 CREATE TABLE IF NOT EXISTS runs (
     run_id TEXT PRIMARY KEY,
-    started_at TIMESTAMP NOT NULL,
-    finished_at TIMESTAMP,
+    started_at TEXT NOT NULL,
+    finished_at TEXT,
     sitemaps_processed INTEGER NOT NULL DEFAULT 0,
     urls_seen INTEGER NOT NULL DEFAULT 0,
     new_urls INTEGER NOT NULL DEFAULT 0,
@@ -69,14 +70,22 @@ CREATE TABLE IF NOT EXISTS runs (
 class PageRow:
     url: str
     language: str
-    sitemap_lastmod: datetime | None
+    sitemap_lastmod: str | None
     last_content_hash: str | None
     last_html_gcs_path: str | None
     last_revision_id: str | None
 
 
-def utcnow() -> datetime:
-    return datetime.now(timezone.utc).replace(tzinfo=None)
+def utcnow_iso() -> str:
+    return datetime.now(timezone.utc).replace(tzinfo=None).isoformat(timespec="seconds")
+
+
+def to_iso(dt: datetime | None) -> str | None:
+    if dt is None:
+        return None
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt.isoformat(timespec="seconds")
 
 
 def new_id() -> str:
@@ -84,30 +93,41 @@ def new_id() -> str:
 
 
 @contextmanager
-def open_state(gcs: GcsClient, state_object: str) -> Iterator["State"]:
+def open_state(gcs: "GcsClient", state_object: str) -> Iterator["State"]:
     tmpdir = tempfile.mkdtemp(prefix="gcdocs-state-")
-    local_path = os.path.join(tmpdir, "state.duckdb")
+    local_path = os.path.join(tmpdir, "state.sqlite")
     existed = gcs.download_to_file(state_object, local_path)
-    conn = duckdb.connect(local_path)
-    conn.execute(_SCHEMA)
+    conn = sqlite3.connect(local_path)
+    conn.execute("PRAGMA journal_mode = WAL;")
+    conn.execute("PRAGMA foreign_keys = ON;")
+    conn.executescript(_SCHEMA)
+    conn.commit()
     state = State(conn=conn, local_path=local_path, existed=existed)
     try:
         yield state
+        conn.commit()
     finally:
         try:
+            # Checkpoint WAL into the main file before close so we upload one
+            # self-contained file.
+            try:
+                conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+            except sqlite3.DatabaseError:
+                pass
             conn.close()
         finally:
             try:
-                gcs.upload_from_file(state_object, local_path, content_type="application/octet-stream")
+                gcs.upload_from_file(state_object, local_path, content_type="application/vnd.sqlite3")
             finally:
-                try:
-                    os.remove(local_path)
-                except FileNotFoundError:
-                    pass
+                for suffix in ("", "-wal", "-shm", "-journal"):
+                    try:
+                        os.remove(local_path + suffix)
+                    except FileNotFoundError:
+                        pass
 
 
 class State:
-    def __init__(self, conn: duckdb.DuckDBPyConnection, local_path: str, existed: bool) -> None:
+    def __init__(self, conn: sqlite3.Connection, local_path: str, existed: bool) -> None:
         self._conn = conn
         self.local_path = local_path
         self.existed_remotely = existed
@@ -117,7 +137,7 @@ class State:
     def sitemap_changed(self, loc: str, lastmod: datetime | None) -> bool:
         row = self._conn.execute(
             "SELECT lastmod FROM sitemaps WHERE loc = ?",
-            [loc],
+            (loc,),
         ).fetchone()
         if row is None:
             return True
@@ -126,7 +146,7 @@ class State:
         stored = row[0]
         if stored is None:
             return True
-        return _to_naive(lastmod) > stored
+        return (to_iso(lastmod) or "") > stored
 
     def record_sitemap_processed(self, loc: str, lastmod: datetime | None, url_count: int) -> None:
         self._conn.execute(
@@ -138,7 +158,7 @@ class State:
                 last_processed_at = excluded.last_processed_at,
                 url_count = excluded.url_count;
             """,
-            [loc, _to_naive(lastmod), utcnow(), url_count],
+            (loc, to_iso(lastmod), utcnow_iso(), url_count),
         )
 
     # ---- pages ------------------------------------------------------------
@@ -150,7 +170,7 @@ class State:
                    last_html_gcs_path, last_revision_id
             FROM pages WHERE url = ?
             """,
-            [url],
+            (url,),
         ).fetchone()
         if row is None:
             return None
@@ -172,7 +192,7 @@ class State:
                 sitemap_lastmod = excluded.sitemap_lastmod,
                 language = excluded.language;
             """,
-            [url, language, _to_naive(sitemap_lastmod), utcnow()],
+            (url, language, to_iso(sitemap_lastmod), utcnow_iso()),
         )
 
     def update_page_after_fetch(
@@ -194,7 +214,7 @@ class State:
                 last_error_at = NULL
             WHERE url = ?
             """,
-            [utcnow(), content_hash, html_gcs_path, revision_id, url],
+            (utcnow_iso(), content_hash, html_gcs_path, revision_id, url),
         )
 
     def record_page_error(self, url: str, message: str) -> None:
@@ -206,7 +226,7 @@ class State:
                 last_error_at = ?
             WHERE url = ?
             """,
-            [message[:500], utcnow(), url],
+            (message[:500], utcnow_iso(), url),
         )
 
     # ---- revisions --------------------------------------------------------
@@ -233,11 +253,11 @@ class State:
                 prev_revision_id, change_type
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
             """,
-            [
-                revision_id, url, language, utcnow(), _to_naive(sitemap_lastmod),
+            (
+                revision_id, url, language, utcnow_iso(), to_iso(sitemap_lastmod),
                 content_hash, title, html_gcs_path, diff_text_gcs_path, diff_html_gcs_path,
                 prev_revision_id, change_type,
-            ],
+            ),
         )
 
     # ---- runs -------------------------------------------------------------
@@ -246,13 +266,13 @@ class State:
         run_id = new_id()
         self._conn.execute(
             "INSERT INTO runs (run_id, started_at) VALUES (?, ?);",
-            [run_id, utcnow()],
+            (run_id, utcnow_iso()),
         )
         return run_id
 
     def finish_run(self, run_id: str, **counters) -> None:
         sets = ["finished_at = ?"]
-        params: list = [utcnow()]
+        params: list = [utcnow_iso()]
         for k, v in counters.items():
             sets.append(f"{k} = ?")
             params.append(v)
@@ -268,27 +288,19 @@ class State:
         self,
         entries: Iterable[tuple[str, str, datetime | None]],
     ) -> tuple[list[tuple[str, str, datetime | None]], list[tuple[str, str, datetime | None]]]:
-        """Split into (new, updated). entries: (url, language, sitemap_lastmod)."""
+        """Split (url, language, sitemap_lastmod) entries into (new, updated)."""
         new: list[tuple[str, str, datetime | None]] = []
         updated: list[tuple[str, str, datetime | None]] = []
         for url, lang, lm in entries:
             row = self._conn.execute(
-                "SELECT sitemap_lastmod, last_content_hash FROM pages WHERE url = ?",
-                [url],
+                "SELECT sitemap_lastmod FROM pages WHERE url = ?",
+                (url,),
             ).fetchone()
             if row is None:
                 new.append((url, lang, lm))
                 continue
-            stored_lm = row[0]
-            naive_lm = _to_naive(lm)
-            if naive_lm is None or stored_lm is None or naive_lm > stored_lm:
+            stored = row[0]
+            incoming = to_iso(lm)
+            if incoming is None or stored is None or incoming > stored:
                 updated.append((url, lang, lm))
         return new, updated
-
-
-def _to_naive(dt: datetime | None) -> datetime | None:
-    if dt is None:
-        return None
-    if dt.tzinfo is None:
-        return dt
-    return dt.astimezone(timezone.utc).replace(tzinfo=None)
