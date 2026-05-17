@@ -1,0 +1,31 @@
+# Override any field via env var GCDOCS__<SECTION>__<KEY> (uppercased).
+# Example: GCDOCS__BUCKET=my-bucket
+
+sitemap_root: "https://cloud.google.com/sitemap.xml"
+
+# GCS bucket holding state DuckDB + snapshots + diffs.
+# In Cloud Run, this is overridden by env var GCDOCS__BUCKET.
+bucket: ""
+
+# Object keys inside the bucket.
+state_object: "state/state.sqlite"
+snapshot_prefix: "snapshots"
+diff_prefix: "diffs"
+
+# Languages to track. cloud.google.com uses no prefix for English and
+# "/<code>/" for everything else.
+languages:
+  - "en"
+  - "ja"
+
+# Only URLs whose path-after-language starts with one of these prefixes
+# are monitored. Add/remove freely; takes effect on next run.
+watch_paths:
+  - "/vertex-ai"
+  - "/generative-ai-app-builder"
+
+# Safety limits per run.
+max_fetch_per_run: 500
+fetch_concurrency: 4
+request_timeout_seconds: 30
+user_agent: "gcdocs-update-collector/0.1 (+https://github.com/fair917/google-cloud-docs-update-collector)"
