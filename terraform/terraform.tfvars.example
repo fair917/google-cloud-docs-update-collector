@@ -1,0 +1,6 @@
+project_id = "your-gcp-project"
+region     = "asia-northeast1"
+
+# After your first `docker push`, set this to the image's full digest, e.g.
+# asia-northeast1-docker.pkg.dev/your-gcp-project/gcdocs-collector-docker/collector:0.1.0
+image_uri = "asia-northeast1-docker.pkg.dev/your-gcp-project/gcdocs-collector-docker/collector:latest"
